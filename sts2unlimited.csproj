@@ -3,9 +3,25 @@
     <TargetFramework>net9.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ReleaseDir>$(MSBuildProjectDirectory)\release</ReleaseDir>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="./sts2.dll"/>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
   </ItemGroup>
-  <!-- Harmony dependency removed; detours implemented manually -->
+
+  <Target Name="BundleRelease" AfterTargets="Build">
+    <ItemGroup>
+      <ReleaseFiles Include="$(OutDir)sts2unlimited.dll" />
+      <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
+      <ReleaseFiles Include="sts2unlimited.pck" />
+      <ReleaseFiles Include="mod_manifest.json" />
+      <ReleaseFiles Include="icon.svg" />
+      <ReleaseFiles Include="sts2unlimited.maxplayers.txt" />
+    </ItemGroup>
+    <MakeDir Directories="$(ReleaseDir)" />
+    <Copy SourceFiles="@(ReleaseFiles)" DestinationFolder="$(ReleaseDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)\README.md" SkipUnchangedFiles="true" />
+    <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
+  </Target>
 </Project>

@@ -1,12 +1,11 @@
 using Godot;
 using System;
 using System.IO;
-using System.Collections.Generic;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Modding;
-using MegaCrit.Sts2.Core.Entities.Multiplayer;   // NetErrorInfo
-using MegaCrit.Sts2.Core.Multiplayer.Game;      // INetGameService
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Logging;
+using HarmonyLib;
 
 namespace Sts2Unlimited;
 
@@ -14,17 +13,20 @@ namespace Sts2Unlimited;
 public static class Sts2Unlimited
 {
 	/// <summary>
-	/// Maximum number of players to allow in a lobby.  Defaults to 4 but
+	/// Maximum number of players to allow in a lobby. Defaults to 8 but
 	/// can be overridden by a text config file located next to the mod DLL.
 	/// </summary>
-	public static int MaxPlayersOverride = 4;
+	private static int maxPlayersOverride = 8;
+
+	private static Harmony harmony;
+
+	public static int MaxPlayersOverride { get => maxPlayersOverride; set => maxPlayersOverride = value; }
 
 	public static void ModLoaded()
 	{
 		LoadConfig();
-
-		ApplyDetours();
-		Console.WriteLine($"Sts2Unlimited loaded successfully! maxPlayers={MaxPlayersOverride}");
+		ApplyHarmonyPatches();
+		Log.LogMessage(LogLevel.Info, LogType.Generic, $"Sts2Unlimited loaded successfully! maxPlayers set to {MaxPlayersOverride}");
 	}
 
 	private static void LoadConfig()
@@ -41,105 +43,118 @@ public static class Sts2Unlimited
 					MaxPlayersOverride = val;
 				}
 			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic, $"Max player config file not found at {cfgPath}. Using default value of {MaxPlayersOverride}.");
+			}
 		}
 		catch (Exception e)
 		{
-			Console.WriteLine($"Unable to read max‑player config: {e.Message}");
+			Log.LogMessage(LogLevel.Error, LogType.Generic, $"Unable to read max-player config: {e.Message}");
 		}
 	}
 
-	// manual detour helpers -------------------------------------------------------------
-
-	// delegates that keep references to the original methods so we can call them
-	private static Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, int, System.Threading.Tasks.Task<NetErrorInfo?>> _origSteamHost;
-	private static Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, ushort, int, NetErrorInfo?> _origENetHost;
-	private static Action<object, INetGameService, int> _origCharInit;
-	private static Action<object, INetGameService, int> _origCustomInit;
-
-	private static void ApplyDetours()
+	private static void ApplyHarmonyPatches()
 	{
 		try
 		{
-			var hostType = typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService);
-			var mSteam = hostType.GetMethod("StartSteamHost");
-			var mENet = hostType.GetMethod("StartENetHost");
-			if (mSteam != null)
+			harmony = new Harmony("sts2unlimited.modifier");
+
+			// Patch StartSteamHost to use custom player count
+			var steamHostMethod = typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService).GetMethod(
+				"StartSteamHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(int)],
+				null
+			);
+
+			if (steamHostMethod != null)
 			{
-				_origSteamHost = (Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, int, System.Threading.Tasks.Task<NetErrorInfo?>>)
-						Delegate.CreateDelegate(typeof(Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, int, System.Threading.Tasks.Task<NetErrorInfo?>>), mSteam);
-				HookMethod(mSteam, typeof(Sts2Unlimited).GetMethod(nameof(Replacement_StartSteamHost), BindingFlags.NonPublic | BindingFlags.Static));
-			}
-			if (mENet != null)
-			{
-				_origENetHost = (Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, ushort, int, NetErrorInfo?>)
-						Delegate.CreateDelegate(typeof(Func<MegaCrit.Sts2.Core.Multiplayer.NetHostGameService, ushort, int, NetErrorInfo?>), mENet);
-				HookMethod(mENet, typeof(Sts2Unlimited).GetMethod(nameof(Replacement_StartENetHost), BindingFlags.NonPublic | BindingFlags.Static));
+				var steamPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartSteamHost), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(steamHostMethod, prefix: new HarmonyMethod(steamPatch));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched StartSteamHost");
 			}
 
-			var charType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen);
-			var customType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen);
-			var init1 = charType.GetMethod("InitializeMultiplayerAsHost", new Type[] { typeof(INetGameService), typeof(int) });
-			if (init1 != null)
+			// Patch StartENetHost to use custom player count
+			var enetHostMethod = typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService).GetMethod(
+				"StartENetHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(ushort), typeof(int)],
+				null
+			);
+
+			if (enetHostMethod != null)
 			{
-				_origCharInit = (Action<object, INetGameService, int>)
-						Delegate.CreateDelegate(typeof(Action<object, INetGameService, int>), init1);
-				HookMethod(init1, typeof(Sts2Unlimited).GetMethod(nameof(Replacement_CharInit), BindingFlags.NonPublic | BindingFlags.Static));
+				var enetPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartENetHost), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(enetHostMethod, prefix: new HarmonyMethod(enetPatch));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched StartENetHost");
 			}
-			var init2 = customType.GetMethod("InitializeMultiplayerAsHost", new Type[] { typeof(INetGameService), typeof(int) });
-			if (init2 != null)
+
+			// Patch NCharacterSelectScreen.InitializeMultiplayerAsHost
+			var charSelectType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen);
+			var charInitMethod = charSelectType.GetMethod(
+				"InitializeMultiplayerAsHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(INetGameService), typeof(int)],
+				null
+			);
+
+			if (charInitMethod != null)
 			{
-				_origCustomInit = (Action<object, INetGameService, int>)
-						Delegate.CreateDelegate(typeof(Action<object, INetGameService, int>), init2);
-				HookMethod(init2, typeof(Sts2Unlimited).GetMethod(nameof(Replacement_CustomInit), BindingFlags.NonPublic | BindingFlags.Static));
+				var charPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_CharacterSelectInit), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(charInitMethod, prefix: new HarmonyMethod(charPatch));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NCharacterSelectScreen.InitializeMultiplayerAsHost");
+			}
+
+			// Patch NCustomRunScreen.InitializeMultiplayerAsHost
+			var customRunType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen);
+			var customInitMethod = customRunType.GetMethod(
+				"InitializeMultiplayerAsHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(INetGameService), typeof(int)],
+				null
+			);
+
+			if (customInitMethod != null)
+			{
+				var customPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_CustomRunInit), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(customInitMethod, prefix: new HarmonyMethod(customPatch));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NCustomRunScreen.InitializeMultiplayerAsHost");
 			}
 		}
 		catch (Exception e)
 		{
-			Console.WriteLine($"Detour failed: {e}");
+			Log.LogMessage(LogLevel.Error, LogType.Generic, $"Failed to apply Harmony patches: {e.Message}");
 		}
 	}
 
-	private static void HookMethod(MethodInfo target, MethodInfo replacement)
+	// Harmony patch methods - these intercept and modify the parameters before the actual method runs
+
+	private static bool Patch_StartSteamHost(ref int maxClients)
 	{
-		RuntimeHelpers.PrepareMethod(target.MethodHandle);
-		RuntimeHelpers.PrepareMethod(replacement.MethodHandle);
-		unsafe
-		{
-			if (IntPtr.Size == 8)
-			{
-				ulong* inj = (ulong*)target.MethodHandle.GetFunctionPointer().ToPointer();
-				ulong* rep = (ulong*)replacement.MethodHandle.GetFunctionPointer().ToPointer();
-				*inj = *rep;
-			}
-			else
-			{
-				uint* inj = (uint*)target.MethodHandle.GetFunctionPointer().ToPointer();
-				uint* rep = (uint*)replacement.MethodHandle.GetFunctionPointer().ToPointer();
-				*inj = *rep;
-			}
-		}
+		maxClients = MaxPlayersOverride;
+		return true; // continue with patched method
 	}
 
-	// replacement implementations -------------------------------------------------------
-
-	private static System.Threading.Tasks.Task<NetErrorInfo?> Replacement_StartSteamHost(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService self, int maxClients)
+	private static bool Patch_StartENetHost(ushort port, ref int maxClients)
 	{
-		return _origSteamHost(self, MaxPlayersOverride);
+		maxClients = MaxPlayersOverride;
+		return true;
 	}
 
-	private static NetErrorInfo? Replacement_StartENetHost(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService self, ushort port, int maxClients)
+	private static bool Patch_CharacterSelectInit(INetGameService gameService, ref int maxPlayers)
 	{
-		return _origENetHost(self, port, MaxPlayersOverride);
+		maxPlayers = MaxPlayersOverride;
+		return true;
 	}
 
-	private static void Replacement_CharInit(object self, INetGameService gameService, int maxPlayers)
+	private static bool Patch_CustomRunInit(INetGameService gameService, ref int maxPlayers)
 	{
-		_origCharInit(self, gameService, MaxPlayersOverride);
-	}
-
-	private static void Replacement_CustomInit(object self, INetGameService gameService, int maxPlayers)
-	{
-		_origCustomInit(self, gameService, MaxPlayersOverride);
+		maxPlayers = MaxPlayersOverride;
+		return true;
 	}
 }
-

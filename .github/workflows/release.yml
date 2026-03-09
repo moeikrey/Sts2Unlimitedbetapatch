@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bump minor version
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' mod_manifest.json)
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
+          jq --arg v "$NEW_VERSION" '.version = $v' mod_manifest.json > tmp.json && mv tmp.json mod_manifest.json
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped version: $VERSION → $NEW_VERSION"
+
+      - name: Download sts2.dll from release assets
+        env:
+          GH_TOKEN: ${{ secrets.STS2_DLL_PAT }}
+        run: |
+          gh release download deps --pattern "sts2.dll" --repo "${{ github.repository }}"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build and bundle
+        run: dotnet build --configuration Release
+        # The BundleRelease MSBuild target copies all mod files to release/
+
+      - name: Zip release directory
+        run: |
+          cd release
+          zip -r ../Sts2Unlimited.zip .
+          echo "Archive contents:"
+          zipinfo ../Sts2Unlimited.zip
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mod_manifest.json
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: Sts2Unlimited.zip
+          generate_release_notes: true

@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text.Json;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Logging;
@@ -26,6 +27,7 @@ public static class Sts2Unlimited
 	{
 		LoadConfig();
 		ApplyHarmonyPatches();
+		SettingsMenuIntegration.InitializeSettingsMenuUI(harmony);
 		Log.LogMessage(LogLevel.Info, LogType.Generic, $"Sts2Unlimited loaded successfully! maxPlayers set to {MaxPlayersOverride}");
 	}
 
@@ -34,19 +36,24 @@ public static class Sts2Unlimited
 		try
 		{
 			string dllDir = Path.GetDirectoryName(typeof(Sts2Unlimited).Assembly.Location) ?? ".";
-			string cfgPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
-			if (File.Exists(cfgPath))
+
+			// Try JSON settings first
+			string jsonPath = Path.Combine(dllDir, "sts2unlimited.settings.json");
+			if (File.Exists(jsonPath))
 			{
-				string txt = File.ReadAllText(cfgPath).Trim();
-				if (int.TryParse(txt, out var val) && val > 0)
+				string json = File.ReadAllText(jsonPath);
+				var doc = JsonDocument.Parse(json);
+				if (doc.RootElement.TryGetProperty("MaxPlayers", out var val))
 				{
-					MaxPlayersOverride = val;
+					MaxPlayersOverride = val.GetInt32();
+					return;
 				}
 			}
-			else
-			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic, $"Max player config file not found at {cfgPath}. Using default value of {MaxPlayersOverride}.");
-			}
+
+			// Fall back to legacy text file
+			string txtPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
+			if (File.Exists(txtPath) && int.TryParse(File.ReadAllText(txtPath).Trim(), out var n) && n > 0)
+				MaxPlayersOverride = n;
 		}
 		catch (Exception e)
 		{

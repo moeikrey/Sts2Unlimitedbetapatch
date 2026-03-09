@@ -1,5 +1,33 @@
-# Godot 4+ specific ignores
+# Godot
 .godot/
 /android/
-release/
 *.log
+
+# Build output
+release/
+bin/
+obj/
+
+# Claude artifacts
+.claude/
+SYSTEM_OVERVIEW.md
+*.cs.uid
+
+# Game DLL reference (large binary, not source)
+sts2.dll
+*.tmp
+
+# User settings (contain local player counts — regenerated at runtime)
+sts2unlimited.settings.json
+sts2unlimited.maxplayers.txt
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vs/
+.vscode/
+*.user
+*.suo

@@ -37,7 +37,7 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Build and bundle
-        run: dotnet build --configuration Release
+        run: dotnet build --configuration ExportRelease
         # The BundleRelease MSBuild target copies all mod files to release/
 
       - name: Zip release directory

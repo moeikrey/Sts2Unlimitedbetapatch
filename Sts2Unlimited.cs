@@ -132,6 +132,52 @@ public static class Sts2Unlimited
 				harmony.Patch(customInitMethod, prefix: new HarmonyMethod(customPatch));
 				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NCustomRunScreen.InitializeMultiplayerAsHost");
 			}
+
+			// Patch NRestSiteRoom._Ready to handle >4 players at the campfire
+			var restSiteRoomType = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom);
+			var restSiteReadyMethod = restSiteRoomType.GetMethod(
+				"_Ready",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				Type.EmptyTypes,
+				null
+			);
+
+			if (restSiteReadyMethod != null)
+			{
+				var campfireTranspiler = typeof(CampfirePatch).GetMethod(
+					nameof(CampfirePatch.Transpile_Ready),
+					BindingFlags.Public | BindingFlags.Static);
+				harmony.Patch(restSiteReadyMethod, transpiler: new HarmonyMethod(campfireTranspiler));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NRestSiteRoom._Ready (campfire fix)");
+			}
+
+			// Patch SaveManager.ConstructDefault to honour --save-dir launch arg
+			var saveManagerType = typeof(MegaCrit.Sts2.Core.Saves.SaveManager);
+			var constructDefaultMethod = saveManagerType.GetMethod(
+				"ConstructDefault",
+				BindingFlags.NonPublic | BindingFlags.Static,
+				null,
+				Type.EmptyTypes,
+				null
+			);
+
+			if (constructDefaultMethod != null)
+			{
+				var saveDirPrefix = typeof(SaveDirPatch).GetMethod(
+					nameof(SaveDirPatch.Prefix_ConstructDefault),
+					BindingFlags.Public | BindingFlags.Static);
+				harmony.Patch(constructDefaultMethod, prefix: new HarmonyMethod(saveDirPrefix));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched SaveManager.ConstructDefault (save-dir support)");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					"[SaveDirPatch] SaveManager.ConstructDefault not found — save-dir patch skipped");
+			}
+
+			// Replace already-created singleton if --save-dir is present
+			SaveDirPatch.ReplaceInstance();
 		}
 		catch (Exception e)
 		{

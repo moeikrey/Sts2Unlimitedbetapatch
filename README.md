@@ -10,12 +10,13 @@ Play **Slay the Spire 2** multiplayer with any number of players. The vanilla ga
 2. Extract all files into your Slay the Spire 2 `mods/` folder:
    ```
    mods/
-   ├── sts2unlimited.dll
-   ├── 0Harmony.dll
-   ├── sts2unlimited.pck
-   ├── mod_manifest.json
-   ├── icon.svg
-   └── sts2unlimited.maxplayers.txt
+   └── Sts2Unlimited/
+       ├── sts2unlimited.dll
+       ├── 0Harmony.dll
+       ├── sts2unlimited.pck
+       ├── mod_manifest.json
+       ├── icon.svg
+       └── sts2unlimited.maxplayers.txt
    ```
 3. Launch the game — the mod loads automatically
 

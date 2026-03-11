@@ -1,4 +1,4 @@
-using System.Linq;
+using System;
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Helpers;
@@ -9,52 +9,82 @@ namespace Sts2Unlimited;
 
 public static class SaveDirPatch
 {
-    public static bool Prefix_ConstructDefault(ref SaveManager __result)
+    public static void Postfix_ConstructDefault() => RedirectPaths(SaveManager.Instance);
+    public static void Postfix_InitProfileId(SaveManager __instance) => RedirectPaths(__instance ?? SaveManager.Instance);
+    public static void Postfix_SwitchProfileId(SaveManager __instance) => RedirectPaths(__instance ?? SaveManager.Instance);
+    public static void ReplaceInstance() => RedirectPaths(SaveManager.Instance);
+
+    private static void RedirectPaths(SaveManager instance)
     {
         string saveDir = CommandLineHelper.GetValue("save-dir");
-
         if (string.IsNullOrWhiteSpace(saveDir))
-            return true; // no arg — let original run
+            return;
 
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            $"[SaveDirPatch] --save-dir detected: '{saveDir}'. Redirecting all save I/O.");
+        if (instance == null)
+            return;
 
-        ISaveStore store = new GodotFileIo(saveDir);
-        __result = new SaveManager(store);
-        return false; // skip original ConstructDefault
+        try
+        {
+            // SaveManager._saveStore (ISaveStore, runtime type = CloudSaveStore)
+            var saveStoreField = typeof(SaveManager).GetField(
+                "_saveStore",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            if (saveStoreField == null) return;
+
+            var saveStore = saveStoreField.GetValue(instance);
+            if (saveStore == null) return;
+
+            // CloudSaveStore.<LocalStore>k__BackingField (ISaveStore, runtime type = GodotFileIo)
+            var localStoreField = saveStore.GetType().GetField(
+                "<LocalStore>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+            if (localStoreField == null)
+            {
+                // Fallback: patch string fields directly on _saveStore
+                PatchStringFields(saveStore, saveDir);
+                return;
+            }
+
+            var localStore = localStoreField.GetValue(saveStore);
+            if (localStore == null) return;
+
+            // GodotFileIo.<SaveDir>k__BackingField (string)
+            var saveDirField = localStore.GetType().GetField(
+                "<SaveDir>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+            if (saveDirField == null)
+            {
+                PatchStringFields(localStore, saveDir);
+                return;
+            }
+
+            saveDirField.SetValue(localStore, saveDir);
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                $"[SaveDirPatch] Save directory redirected to '{saveDir}'");
+        }
+        catch (Exception ex)
+        {
+            Log.LogMessage(LogLevel.Error, LogType.Generic,
+                $"[SaveDirPatch] Exception during redirect: {ex.Message}");
+        }
     }
 
-    public static void ReplaceInstance()
+    private static void PatchStringFields(object obj, string saveDir)
     {
-        string saveDir = CommandLineHelper.GetValue("save-dir");
-        if (string.IsNullOrWhiteSpace(saveDir))
-            return;
-
-        var instance = SaveManager.Instance;
-        if (instance == null)
+        const string SteamPrefix = "user://steam/";
+        foreach (var f in obj.GetType().GetFields(
+            BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance))
         {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[SaveDirPatch] SaveManager.Instance is null — live store replacement skipped");
-            return;
+            if (f.FieldType != typeof(string)) continue;
+            var val = f.GetValue(obj) as string;
+            if (val == null || !val.StartsWith(SteamPrefix)) continue;
+
+            var afterPrefix = val.Substring(SteamPrefix.Length);
+            var slashIdx = afterPrefix.IndexOf('/');
+            var relative = slashIdx >= 0 ? afterPrefix.Substring(slashIdx) : "";
+            f.SetValue(obj, saveDir + relative);
         }
-
-        // Swap the ISaveStore field on the existing instance rather than replacing the whole
-        // singleton. This preserves already-loaded state (settings, locale prefs, etc.) so that
-        // subsequent game systems (LocManager, etc.) can still read from it — only future
-        // reads/writes are redirected to the custom path.
-        var storeField = typeof(SaveManager)
-            .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(f => typeof(ISaveStore).IsAssignableFrom(f.FieldType));
-
-        if (storeField == null)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[SaveDirPatch] ISaveStore field not found on SaveManager — live store replacement skipped");
-            return;
-        }
-
-        storeField.SetValue(instance, new GodotFileIo(saveDir));
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            $"[SaveDirPatch] SaveManager store swapped — all save I/O now goes to '{saveDir}'");
     }
 }

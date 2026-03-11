@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using MegaCrit.Sts2.Core.Modding;
@@ -152,32 +153,101 @@ public static class Sts2Unlimited
 				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NRestSiteRoom._Ready (campfire fix)");
 			}
 
-			// Patch SaveManager.ConstructDefault to honour --save-dir launch arg
+			// Patch ALL ConstructDefault overloads with a PostFix that re-applies
+			// our custom store after each call (covers profile-scoped re-initialisation).
 			var saveManagerType = typeof(MegaCrit.Sts2.Core.Saves.SaveManager);
-			var constructDefaultMethod = saveManagerType.GetMethod(
-				"ConstructDefault",
-				BindingFlags.NonPublic | BindingFlags.Static,
-				null,
-				Type.EmptyTypes,
-				null
-			);
+			var saveDirPostfix = typeof(SaveDirPatch).GetMethod(
+				nameof(SaveDirPatch.Postfix_ConstructDefault),
+				BindingFlags.Public | BindingFlags.Static);
+			var constructDefaultMethods = saveManagerType
+				.GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+				.Where(m => m.Name == "ConstructDefault")
+				.ToList();
 
-			if (constructDefaultMethod != null)
+			if (constructDefaultMethods.Count > 0)
 			{
-				var saveDirPrefix = typeof(SaveDirPatch).GetMethod(
-					nameof(SaveDirPatch.Prefix_ConstructDefault),
-					BindingFlags.Public | BindingFlags.Static);
-				harmony.Patch(constructDefaultMethod, prefix: new HarmonyMethod(saveDirPrefix));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched SaveManager.ConstructDefault (save-dir support)");
+				foreach (var m in constructDefaultMethods)
+				{
+					harmony.Patch(m, postfix: new HarmonyMethod(saveDirPostfix));
+					var sig = string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name));
+					Log.LogMessage(LogLevel.Debug, LogType.Generic,
+						$"[SaveDirPatch] PostFix patched ConstructDefault({sig})");
+				}
 			}
 			else
 			{
 				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[SaveDirPatch] SaveManager.ConstructDefault not found — save-dir patch skipped");
+					"[SaveDirPatch] SaveManager.ConstructDefault not found — save-dir patch limited to ReplaceInstance");
+			}
+
+			// Patch InitProfileId — this is what sets the Steam-user-scoped path and overwrites
+			// our store swap ("Profile-scoped data path initialized: user://steam/...").
+			var initProfileIdMethod = saveManagerType.GetMethod(
+				"InitProfileId",
+				BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+				null,
+				[typeof(int?)],
+				null
+			);
+
+			if (initProfileIdMethod != null)
+			{
+				var initProfilePostfix = typeof(SaveDirPatch).GetMethod(
+					nameof(SaveDirPatch.Postfix_InitProfileId),
+					BindingFlags.Public | BindingFlags.Static);
+				harmony.Patch(initProfileIdMethod, postfix: new HarmonyMethod(initProfilePostfix));
+				Log.LogMessage(LogLevel.Info, LogType.Generic,
+					"[SaveDirPatch] Patched SaveManager.InitProfileId (save-dir support)");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					"[SaveDirPatch] SaveManager.InitProfileId not found — save-dir may not work after profile init");
+			}
+
+			// Patch SwitchProfileId — also updates path fields if the user changes profiles.
+			var switchProfileIdMethod = saveManagerType.GetMethod(
+				"SwitchProfileId",
+				BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+				null,
+				[typeof(int)],
+				null
+			);
+
+			if (switchProfileIdMethod != null)
+			{
+				var switchProfilePostfix = typeof(SaveDirPatch).GetMethod(
+					nameof(SaveDirPatch.Postfix_SwitchProfileId),
+					BindingFlags.Public | BindingFlags.Static);
+				harmony.Patch(switchProfileIdMethod, postfix: new HarmonyMethod(switchProfilePostfix));
+				Log.LogMessage(LogLevel.Debug, LogType.Generic,
+					"[SaveDirPatch] Patched SaveManager.SwitchProfileId");
 			}
 
 			// Replace already-created singleton if --save-dir is present
 			SaveDirPatch.ReplaceInstance();
+
+			// Build reflection cache for chest patch
+			ChestPatch.RegisterReflectionCache();
+
+			// Patch NTreasureRoomRelicCollection.InitializeRelics to support >4 players:
+			// - extends the loop bound from _multiplayerHolders.Count to RunManager.NumPlayers
+			// - bounds-clamps _multiplayerHolders[i] so extra players share the last holder
+			var initRelicsMethod = ChestPatch.GetInitializeRelicsMethod();
+			if (initRelicsMethod != null)
+			{
+				var chestTranspiler = typeof(ChestPatch).GetMethod(
+					nameof(ChestPatch.Transpile_InitializeRelics),
+					BindingFlags.Public | BindingFlags.Static);
+				harmony.Patch(initRelicsMethod, transpiler: new HarmonyMethod(chestTranspiler));
+				Log.LogMessage(LogLevel.Info, LogType.Generic,
+					"[ChestPatch] Patched NTreasureRoomRelicCollection.InitializeRelics (chest fix)");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					"[ChestPatch] NTreasureRoomRelicCollection.InitializeRelics not found — chest fix skipped");
+			}
 		}
 		catch (Exception e)
 		{

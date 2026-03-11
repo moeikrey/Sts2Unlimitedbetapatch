@@ -24,4 +24,18 @@
     <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)\README.md" SkipUnchangedFiles="true" />
     <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
   </Target>
+
+  <PropertyGroup>
+    <GameModDir>G:\Games\SteamLibrary\steamapps\common\Slay the Spire 2\mods\Sts2Unlimited</GameModDir>
+  </PropertyGroup>
+
+  <Target Name="DeployToGame" AfterTargets="BundleRelease">
+    <ItemGroup>
+      <DeployFiles Include="$(OutDir)sts2unlimited.dll" />
+      <DeployFiles Include="$(OutDir)0Harmony.dll" />
+      <DeployFiles Include="sts2unlimited.pck" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(GameModDir)" SkipUnchangedFiles="false" />
+    <Message Text="✓ Deployed mod to: $(GameModDir)" Importance="high" />
+  </Target>
 </Project>

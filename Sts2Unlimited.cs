@@ -227,6 +227,9 @@ public static class Sts2Unlimited
 			// Replace already-created singleton if --save-dir is present
 			SaveDirPatch.ReplaceInstance();
 
+			// Patch packet list serialization to support more than 7 items (3-bit limit)
+			PacketSizePatch.Apply(harmony);
+
 			// Build reflection cache for chest patch
 			ChestPatch.RegisterReflectionCache();
 
@@ -236,10 +239,15 @@ public static class Sts2Unlimited
 			var initRelicsMethod = ChestPatch.GetInitializeRelicsMethod();
 			if (initRelicsMethod != null)
 			{
+				var chestPrefix = typeof(ChestPatch).GetMethod(
+					nameof(ChestPatch.Prefix_InitializeRelics),
+					BindingFlags.Public | BindingFlags.Static);
 				var chestTranspiler = typeof(ChestPatch).GetMethod(
 					nameof(ChestPatch.Transpile_InitializeRelics),
 					BindingFlags.Public | BindingFlags.Static);
-				harmony.Patch(initRelicsMethod, transpiler: new HarmonyMethod(chestTranspiler));
+				harmony.Patch(initRelicsMethod,
+					prefix: new HarmonyMethod(chestPrefix),
+					transpiler: new HarmonyMethod(chestTranspiler));
 				Log.LogMessage(LogLevel.Info, LogType.Generic,
 					"[ChestPatch] Patched NTreasureRoomRelicCollection.InitializeRelics (chest fix)");
 			}

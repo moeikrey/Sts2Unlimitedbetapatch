@@ -15,16 +15,27 @@ namespace Sts2Unlimited;
 /// The game hardcodes lengthBits=3 in Serialize/Deserialize methods, capping list
 /// length at 7. We transpile every Serialize/Deserialize method to replace the
 /// constant 3 (when passed to WriteList/ReadList) with a call to GetRequiredBits(),
-/// which returns ceil(log2(MaxPlayersOverride + 1)). Both sides are patched
-/// identically so the wire format stays consistent.
+/// which returns a FIXED bit width based on the absolute maximum player count (16).
+///
+/// Using a fixed value (not MaxPlayersOverride) is critical for cross-client
+/// compatibility: if two clients have different local MaxPlayers settings they must
+/// still use identical wire formats, otherwise deserialization fails and joining is
+/// impossible. 5 bits supports lists of up to 31 elements.
 /// </summary>
 public static class PacketSizePatch
 {
+    // Maximum players the mod UI allows (must match SettingsMenuIntegration.PLAYER_MAX).
+    private const int AbsoluteMaxPlayers = 16;
+
     public static int RequiredBits(int maxCount)
         => maxCount <= 1 ? 1 : (int)Math.Ceiling(Math.Log2(maxCount + 1));
 
+    /// <summary>
+    /// Returns the fixed bit width used on the wire — always based on AbsoluteMaxPlayers,
+    /// never the local MaxPlayersOverride, so all clients agree on the format.
+    /// </summary>
     public static int GetRequiredBits()
-        => RequiredBits(Sts2Unlimited.MaxPlayersOverride);
+        => RequiredBits(AbsoluteMaxPlayers);
 
     private static readonly MethodInfo _getRequiredBitsMethod =
         typeof(PacketSizePatch).GetMethod(nameof(GetRequiredBits),
@@ -100,8 +111,7 @@ public static class PacketSizePatch
 
         Log.LogMessage(LogLevel.Info, LogType.Generic,
             $"[PacketSizePatch] Patched {patchedTypes} types, {errors} errors. " +
-            $"RequiredBits={RequiredBits(Sts2Unlimited.MaxPlayersOverride)} " +
-            $"for MaxPlayers={Sts2Unlimited.MaxPlayersOverride}");
+            $"WireBits={GetRequiredBits()} (fixed for AbsoluteMax={AbsoluteMaxPlayers})");
     }
 
     private static IEnumerable<Type> SafeGetTypes(Assembly asm)

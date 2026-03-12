@@ -242,11 +242,15 @@ public static class Sts2Unlimited
 				var chestPrefix = typeof(ChestPatch).GetMethod(
 					nameof(ChestPatch.Prefix_InitializeRelics),
 					BindingFlags.Public | BindingFlags.Static);
+				var chestPostfix = typeof(ChestPatch).GetMethod(
+					nameof(ChestPatch.Postfix_InitializeRelics),
+					BindingFlags.Public | BindingFlags.Static);
 				var chestTranspiler = typeof(ChestPatch).GetMethod(
 					nameof(ChestPatch.Transpile_InitializeRelics),
 					BindingFlags.Public | BindingFlags.Static);
 				harmony.Patch(initRelicsMethod,
 					prefix: new HarmonyMethod(chestPrefix),
+					postfix: new HarmonyMethod(chestPostfix),
 					transpiler: new HarmonyMethod(chestTranspiler));
 				Log.LogMessage(LogLevel.Info, LogType.Generic,
 					"[ChestPatch] Patched NTreasureRoomRelicCollection.InitializeRelics (chest fix)");

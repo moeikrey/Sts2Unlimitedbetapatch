@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
@@ -17,7 +18,12 @@ public static class ChestPatch
     private static Type _runManagerType;
     private static PropertyInfo _instanceProp;
     private static PropertyInfo _stateProp;
+    private static FieldInfo _stateField;
     private static PropertyInfo _playersListProp;
+    private static FieldInfo _playersListField;
+
+    // Set by Prefix, read by Postfix — avoids using holders.Count which may include unused duplicates
+    private static int _activePlayers;
 
     // Cached holder Index setter
     private static MethodInfo _indexSetter;
@@ -34,17 +40,41 @@ public static class ChestPatch
         _runManagerType = Type.GetType("MegaCrit.Sts2.Core.Runs.RunManager, sts2", false);
         if (_runManagerType != null)
         {
-            _instanceProp = _runManagerType.GetProperty("Instance",
-                BindingFlags.Public | BindingFlags.Static);
-            _stateProp = _runManagerType.GetProperty("State",
-                BindingFlags.Public | BindingFlags.Instance);
-            // Players is declared on IRunState; get it from the property's return type
-            _playersListProp = _stateProp?.PropertyType.GetProperty("Players",
-                BindingFlags.Public | BindingFlags.Instance);
+            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic
+                                   | BindingFlags.Instance | BindingFlags.Static
+                                   | BindingFlags.FlattenHierarchy;
+
+            _instanceProp = _runManagerType.GetProperty("Instance", all);
+
+            // Try property first, then field for State
+            _stateProp = _runManagerType.GetProperty("State", all);
+            if (_stateProp == null)
+                _stateField = _runManagerType.GetField("State", all)
+                           ?? _runManagerType.GetField("_state", all)
+                           ?? _runManagerType.GetField("_runState", all);
+
+            // Resolve Players from the State type
+            var stateType = _stateProp?.PropertyType ?? _stateField?.FieldType;
+            if (stateType != null)
+            {
+                _playersListProp = stateType.GetProperty("Players", all);
+                if (_playersListProp == null)
+                    _playersListField = stateType.GetField("Players", all)
+                                     ?? stateType.GetField("_players", all);
+            }
+
+            // Log all State-like members to help diagnose when things go wrong
+            var stateMembers = string.Join(", ", _runManagerType
+                .GetMembers(all)
+                .Where(m => m.Name.ToLower().Contains("state") || m.Name.ToLower().Contains("player"))
+                .Select(m => m.Name));
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                $"[ChestPatch] RunManager State/Player members: {stateMembers}");
         }
         Log.LogMessage(LogLevel.Info, LogType.Generic,
             $"[ChestPatch] RunManager cache: Instance={_instanceProp?.Name ?? "null"}, " +
-            $"State={_stateProp?.Name ?? "null"}, Players={_playersListProp?.Name ?? "null"}");
+            $"State={_stateProp?.Name ?? _stateField?.Name ?? "null"}, " +
+            $"Players={_playersListProp?.Name ?? _playersListField?.Name ?? "null"}");
 
         // -- NTreasureRoomRelicCollection --
         var collectionType = Type.GetType(
@@ -107,15 +137,15 @@ public static class ChestPatch
     {
         try
         {
-            if (_instanceProp != null && _stateProp != null && _playersListProp != null)
+            if (_instanceProp != null)
             {
                 var rm = _instanceProp.GetValue(null);
                 if (rm != null)
                 {
-                    var state = _stateProp.GetValue(rm);
+                    var state = _stateProp?.GetValue(rm) ?? _stateField?.GetValue(rm);
                     if (state != null)
                     {
-                        var players = _playersListProp.GetValue(state);
+                        var players = _playersListProp?.GetValue(state) ?? _playersListField?.GetValue(state);
                         if (players != null)
                         {
                             int count = (int)players.GetType()
@@ -137,9 +167,8 @@ public static class ChestPatch
     }
 
     /// <summary>
-    /// Runs before InitializeRelics. If _multiplayerHolders has fewer entries than the
-    /// current player count, duplicates the last holder node for each extra player and
-    /// appends it to the list so the transpiler's extended loop has a real node per player.
+    /// Runs before InitializeRelics. Duplicates the last holder node for each extra player
+    /// so the transpiler's extended loop has a real node per player.
     /// </summary>
     public static void Prefix_InitializeRelics(object __instance)
     {
@@ -151,7 +180,7 @@ public static class ChestPatch
             if (holders == null || holders.Count == 0) return;
 
             int numPlayers = GetLoopCount();
-            if (holders.Count >= numPlayers) return;
+            _activePlayers = numPlayers; // save for postfix
 
             var lastHolder = holders[holders.Count - 1] as Godot.Node;
             if (lastHolder == null) return;
@@ -164,23 +193,7 @@ public static class ChestPatch
                 return;
             }
 
-            // Arrange all holders in a circle around the center of the parent.
-            var parentCtrl = parent as Godot.Control;
-            var holderSize = (holders[0] as Godot.Control)?.Size ?? Godot.Vector2.Zero;
-
-            Godot.Vector2 center = parentCtrl != null
-                ? parentCtrl.Size / 2f
-                : holderSize / 2f;
-
-            // Radius: half the shorter dimension of the parent, inset slightly.
-            float radius = parentCtrl != null
-                ? Math.Min(parentCtrl.Size.X, parentCtrl.Size.Y) * 0.35f
-                : 250f;
-
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] Circle layout: center={center}, radius={radius}, n={numPlayers}");
-
-            // Duplicate extra holders first so we can position everything in one loop.
+            // Duplicate extra holders if needed.
             int startIndex = holders.Count;
             for (int i = startIndex; i < numPlayers; i++)
             {
@@ -191,18 +204,8 @@ public static class ChestPatch
                 holders.Add(duplicate);
             }
 
-            // Position all holders evenly around the circle, starting at the top.
-            for (int i = 0; i < numPlayers; i++)
-            {
-                if (holders[i] is not Godot.Control ctrl) continue;
-                float angle = -MathF.PI / 2f + 2f * MathF.PI * i / numPlayers;
-                ctrl.Position = center
-                    + new Godot.Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius
-                    - holderSize / 2f;
-            }
-
             Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] Extended _multiplayerHolders from {startIndex} to {numPlayers}");
+                $"[ChestPatch] Prefix: added {holders.Count - startIndex} holder(s), total={holders.Count}");
         }
         catch (Exception e)
         {
@@ -211,7 +214,93 @@ public static class ChestPatch
         }
     }
 
-    [HarmonyTranspiler]
+    private static Godot.Vector2 GetNodePosition(object node)
+    {
+        if (node is Godot.Control c) return c.Position;
+        if (node is Godot.Node2D n) return n.Position;
+        return Godot.Vector2.Zero;
+    }
+
+    private static void SetNodePosition(object node, Godot.Vector2 pos)
+    {
+        if (node is Godot.Control c) { c.Position = pos; return; }
+        if (node is Godot.Node2D n) { n.Position = pos; return; }
+        // Last resort: use .NET reflection (handles GDExtension-wrapped types)
+        node.GetType().GetProperty("Position")?.SetValue(node, pos);
+    }
+
+    private static Godot.Vector2 GetNodeSize(object node)
+    {
+        if (node is Godot.Control c) return c.Size;
+        return new Godot.Vector2(100f, 100f);
+    }
+
+    /// <summary>
+    /// Runs after InitializeRelics. Repositions all holders in an evenly-spaced circle
+    /// so the game's default positioning doesn't stick.
+    /// </summary>
+    public static void Postfix_InitializeRelics(object __instance)
+    {
+        try
+        {
+            if (_multiplayerHoldersField == null) return;
+
+            var holders = _multiplayerHoldersField.GetValue(__instance) as System.Collections.IList;
+            if (holders == null || holders.Count == 0) return;
+
+            // Use the player count saved by the prefix, not holders.Count which may include
+            // unused duplicates added to satisfy MaxPlayersOverride.
+            int numPlayers = _activePlayers > 0 ? _activePlayers : GetLoopCount();
+            if (numPlayers <= 0 || numPlayers > holders.Count) numPlayers = holders.Count;
+            var holderSize = GetNodeSize(holders[0]);
+
+            // Determine center and radius from parent, falling back to average of holder positions.
+            var parentNode = (holders[0] as Godot.Node)?.GetParent();
+            var parentCtrl = parentNode as Godot.Control;
+
+            Godot.Vector2 center;
+            float radius;
+
+            if (parentCtrl != null && (parentCtrl.Size.X > 1f || parentCtrl.Size.Y > 1f))
+            {
+                center = parentCtrl.Size / 2f;
+                radius = Math.Min(parentCtrl.Size.X, parentCtrl.Size.Y) * 0.35f;
+                center.Y += radius * 0.15f;
+            }
+            else
+            {
+                // Fall back: center on the average position of current holders.
+                Godot.Vector2 sum = Godot.Vector2.Zero;
+                for (int i = 0; i < numPlayers; i++)
+                    sum += GetNodePosition(holders[i]);
+                center = sum / numPlayers + holderSize / 2f;
+                radius = 200f;
+            }
+
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                $"[ChestPatch] Circle layout: center={center}, radius={radius}, n={numPlayers}, " +
+                $"holderType={holders[0]?.GetType().Name ?? "null"}, parentType={parentNode?.GetType().Name ?? "null"}");
+
+            // Position all holders evenly around the circle, starting at the top (−90°).
+            for (int i = 0; i < numPlayers; i++)
+            {
+                float angle = -MathF.PI / 2f + 2f * MathF.PI * i / numPlayers;
+                var pos = center
+                    + new Godot.Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius
+                    - holderSize / 2f;
+                SetNodePosition(holders[i], pos);
+            }
+
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                $"[ChestPatch] Postfix: arranged {numPlayers} holders in circle");
+        }
+        catch (Exception e)
+        {
+            Log.LogMessage(LogLevel.Warn, LogType.Generic,
+                $"[ChestPatch] Postfix_InitializeRelics failed: {e.Message}\n{e.StackTrace}");
+        }
+    }
+
     public static IEnumerable<CodeInstruction> Transpile_InitializeRelics(
         IEnumerable<CodeInstruction> instructions)
     {

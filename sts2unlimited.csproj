@@ -15,7 +15,7 @@
       <ReleaseFiles Include="$(OutDir)sts2unlimited.dll" />
       <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
       <ReleaseFiles Include="sts2unlimited.pck" />
-      <ReleaseFiles Include="mod_manifest.json" />
+      <ReleaseFiles Include="Sts2Unlimited.json" />
       <ReleaseFiles Include="icon.svg" />
       <ReleaseFiles Include="sts2unlimited.maxplayers.txt" />
     </ItemGroup>
@@ -25,17 +25,14 @@
     <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
   </Target>
 
-  <PropertyGroup>
-    <GameModDir>G:\Games\SteamLibrary\steamapps\common\Slay the Spire 2\mods\Sts2Unlimited</GameModDir>
-  </PropertyGroup>
-
-  <Target Name="DeployToGame" AfterTargets="BundleRelease">
+  <Target Name="DeployToGame" AfterTargets="BundleRelease" Condition="'$(STS2_MOD_DIR)' != ''">
     <ItemGroup>
       <DeployFiles Include="$(OutDir)sts2unlimited.dll" />
       <DeployFiles Include="$(OutDir)0Harmony.dll" />
       <DeployFiles Include="sts2unlimited.pck" />
+      <DeployFiles Include="Sts2Unlimited.json" />
     </ItemGroup>
-    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(GameModDir)" SkipUnchangedFiles="false" />
-    <Message Text="✓ Deployed mod to: $(GameModDir)" Importance="high" />
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(STS2_MOD_DIR)" SkipUnchangedFiles="false" />
+    <Message Text="✓ Deployed mod to: $(STS2_MOD_DIR)" Importance="high" />
   </Target>
 </Project>

@@ -3,7 +3,7 @@
   "name": "STS 2 Unlimited",
   "author": "Andrew Jivoin",
   "description": "Play Slay the Spire 2 with any number of players.",
-  "version": "v0.5.1",
+  "version": "v0.5.2",
   "has_pck": true,
   "has_dll": true,
   "dependencies": [],

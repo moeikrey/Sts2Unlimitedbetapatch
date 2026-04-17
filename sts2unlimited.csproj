@@ -21,6 +21,8 @@
     </ItemGroup>
     <MakeDir Directories="$(ReleaseDir)" />
     <Copy SourceFiles="@(ReleaseFiles)" DestinationFolder="$(ReleaseDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutDir)sts2unlimited.dll" DestinationFiles="$(ReleaseDir)\Sts2Unlimited.dll" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="sts2unlimited.pck" DestinationFiles="$(ReleaseDir)\Sts2Unlimited.pck" SkipUnchangedFiles="true" />
     <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)\README.md" SkipUnchangedFiles="true" />
     <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
   </Target>
@@ -33,6 +35,8 @@
       <DeployFiles Include="Sts2Unlimited.json" />
     </ItemGroup>
     <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(STS2_MOD_DIR)" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="$(OutDir)sts2unlimited.dll" DestinationFiles="$(STS2_MOD_DIR)\Sts2Unlimited.dll" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="sts2unlimited.pck" DestinationFiles="$(STS2_MOD_DIR)\Sts2Unlimited.pck" SkipUnchangedFiles="false" />
     <Message Text="✓ Deployed mod to: $(STS2_MOD_DIR)" Importance="high" />
   </Target>
 </Project>

@@ -3,6 +3,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Sts2Unlimited</AssemblyName>
     <ReleaseDir>$(MSBuildProjectDirectory)\release</ReleaseDir>
   </PropertyGroup>
   <ItemGroup>
@@ -11,17 +12,16 @@
   </ItemGroup>
 
   <Target Name="BundleRelease" AfterTargets="Build">
+    <RemoveDir Directories="$(ReleaseDir)" Condition="Exists('$(ReleaseDir)')" />
     <ItemGroup>
-      <ReleaseFiles Include="$(OutDir)sts2unlimited.dll" />
+      <ReleaseFiles Include="$(OutDir)Sts2Unlimited.dll" />
       <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
-      <ReleaseFiles Include="sts2unlimited.pck" />
       <ReleaseFiles Include="Sts2Unlimited.json" />
       <ReleaseFiles Include="icon.svg" />
       <ReleaseFiles Include="sts2unlimited.maxplayers.txt" />
     </ItemGroup>
     <MakeDir Directories="$(ReleaseDir)" />
     <Copy SourceFiles="@(ReleaseFiles)" DestinationFolder="$(ReleaseDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(OutDir)sts2unlimited.dll" DestinationFiles="$(ReleaseDir)\Sts2Unlimited.dll" SkipUnchangedFiles="true" />
     <Copy SourceFiles="sts2unlimited.pck" DestinationFiles="$(ReleaseDir)\Sts2Unlimited.pck" SkipUnchangedFiles="true" />
     <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)\README.md" SkipUnchangedFiles="true" />
     <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
@@ -29,13 +29,11 @@
 
   <Target Name="DeployToGame" AfterTargets="BundleRelease" Condition="'$(STS2_MOD_DIR)' != ''">
     <ItemGroup>
-      <DeployFiles Include="$(OutDir)sts2unlimited.dll" />
+      <DeployFiles Include="$(OutDir)Sts2Unlimited.dll" />
       <DeployFiles Include="$(OutDir)0Harmony.dll" />
-      <DeployFiles Include="sts2unlimited.pck" />
       <DeployFiles Include="Sts2Unlimited.json" />
     </ItemGroup>
     <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(STS2_MOD_DIR)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="$(OutDir)sts2unlimited.dll" DestinationFiles="$(STS2_MOD_DIR)\Sts2Unlimited.dll" SkipUnchangedFiles="false" />
     <Copy SourceFiles="sts2unlimited.pck" DestinationFiles="$(STS2_MOD_DIR)\Sts2Unlimited.pck" SkipUnchangedFiles="false" />
     <Message Text="✓ Deployed mod to: $(STS2_MOD_DIR)" Importance="high" />
   </Target>

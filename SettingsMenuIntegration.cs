@@ -1,8 +1,9 @@
 using Godot;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
-using System.Text.Json;
 using HarmonyLib;
 
 namespace Sts2Unlimited;
@@ -33,19 +34,34 @@ public static class SettingsMenuIntegration
     {
         try
         {
-            var screenType = Type.GetType(
-                "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NSettingsScreen, sts2", false);
-            if (screenType == null) { GD.PrintErr("[Sts2Unlimited] NSettingsScreen type not found."); return; }
+            var settingsScreenTypes = FindSettingsScreenTypes();
+            if (settingsScreenTypes.Count == 0)
+            {
+                GD.PrintErr("[Sts2Unlimited] No settings screen types found.");
+                return;
+            }
 
-            var readyMethod = screenType.GetMethod("_Ready",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (readyMethod == null) { GD.PrintErr("[Sts2Unlimited] NSettingsScreen._Ready not found."); return; }
+            var postfix = new HarmonyMethod(typeof(SettingsMenuIntegration).GetMethod(
+                nameof(Patch_NSettingsScreen_Ready),
+                BindingFlags.NonPublic | BindingFlags.Static));
 
-            harmony.Patch(readyMethod, postfix: new HarmonyMethod(
-                typeof(SettingsMenuIntegration).GetMethod(nameof(Patch_NSettingsScreen_Ready),
-                    BindingFlags.NonPublic | BindingFlags.Static)));
+            int patched = 0;
+            foreach (var screenType in settingsScreenTypes)
+            {
+                var readyMethod = screenType.GetMethod("_Ready",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                if (readyMethod == null) continue;
 
-            GD.Print("[Sts2Unlimited] Patched NSettingsScreen._Ready.");
+                harmony.Patch(readyMethod, postfix: postfix);
+                patched++;
+                GD.Print($"[Sts2Unlimited] Patched {screenType.FullName}._Ready.");
+            }
+
+            if (patched == 0)
+                GD.PrintErr("[Sts2Unlimited] Found settings types, but no _Ready methods were patchable.");
         }
         catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Patch failed: {e.Message}"); }
     }
@@ -55,39 +71,34 @@ public static class SettingsMenuIntegration
         if (__instance is not Node screen) return;
         try
         {
-            var masterType = Type.GetType(
-                "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider, sts2", false);
-            if (masterType == null) { GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider not found."); return; }
+            if (FindNodeByName(screen, "Sts2UnlimitedMaxPlayersRow") != null)
+                return;
 
-            // Use NMasterVolumeSlider (Sound tab) as a template for the row structure:
-            //   MarginContainer (row) → MegaRichTextLabel 'Label' + NMasterVolumeSlider
-            Node template    = FindNodeByType(screen, masterType);
-            if (template == null) { GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider node not found."); return; }
-            Node templateRow = template.GetParent(); // MarginContainer
-
-            // Target: General tab, after the Modding divider
-            // %ModdingDivider is a scene-unique-name node inside the General settings VBoxContainer.
-            Node moddingDivider = screen.GetNodeOrNull("%ModdingDivider");
-            if (moddingDivider == null)
+            if (!TryFindTemplateRow(screen, out var templateRow))
             {
-                GD.PrintErr("[Sts2Unlimited] %ModdingDivider not found — cannot place slider.");
+                GD.PrintErr("[Sts2Unlimited] Could not locate a settings slider template row.");
                 return;
             }
-            Node targetParent = moddingDivider.GetParent(); // General settings VBoxContainer
 
-            // Duplicate the whole row (gets Label + styled NMasterVolumeSlider)
+            if (!TryFindInsertionPoint(screen, out var targetParent, out var anchor))
+            {
+                GD.PrintErr("[Sts2Unlimited] Could not locate insertion point in settings UI.");
+                return;
+            }
+
+            // Duplicate the whole row (keeps internal scene-unique slider setup).
             Node sliderRow = (Node)templateRow.Duplicate(15);
             sliderRow.Name = "Sts2UnlimitedMaxPlayersRow";
-            Node slider = FindNodeByType(sliderRow, masterType);
+            Node sliderOwner = FindSliderOwnerNode(sliderRow) ?? sliderRow;
 
-            // Divider: clone %ModdingDivider (same tab, guaranteed same style)
-            Node divider = (Node)moddingDivider.Duplicate();
+            // Divider: clone nearby divider if possible; otherwise create a simple fallback.
+            Node divider = FindSiblingDivider(targetParent, anchor)
+                        ?? FindFirstDivider(targetParent)
+                        ?? new HSeparator();
+            divider = (Node)divider.Duplicate();
             divider.Name = "Sts2UnlimitedMaxPlayersDivider";
 
-            // Insert divider then sliderRow immediately after %Modding (the button),
-            // not after %ModdingDivider (which comes before the button).
-            Node moddingButton = screen.GetNodeOrNull("%Modding") ?? moddingDivider;
-            int insertAt = moddingButton.GetIndex();
+            int insertAt = anchor.GetIndex();
             targetParent.AddChild(divider);
             targetParent.AddChild(sliderRow);
             targetParent.MoveChild(divider,   insertAt + 1);
@@ -98,7 +109,7 @@ public static class SettingsMenuIntegration
 
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(() =>
             {
-                try { ConfigureMaxPlayersSlider(slider, sliderRow, Sts2Unlimited.MaxPlayersOverride); }
+                try { ConfigureMaxPlayersSlider(sliderOwner, sliderRow, Sts2Unlimited.MaxPlayersOverride); }
                 catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Config error: {e.Message}\n{e.StackTrace}"); }
             }), (uint)GodotObject.ConnectFlags.OneShot);
         }
@@ -108,14 +119,15 @@ public static class SettingsMenuIntegration
     private static void ConfigureMaxPlayersSlider(Node slider, Node sliderRow, int playerCount)
     {
         // ── 1. Name label — MegaRichTextLabel 'Label' inside the MarginContainer row ──
-        var nameLabel = sliderRow.GetNodeOrNull("Label");
+        var nameLabel = sliderRow.GetNodeOrNull("Label") ?? FindNodeByName(sliderRow, "Label");
         if (nameLabel != null)
             nameLabel.Set("text", "Max Players");
         else
             GD.PrintErr("[Sts2Unlimited] 'Label' not found in sliderRow.");
 
         // ── 2. NSlider (Range) ───────────────────────────────────────────────
-        var nslider = slider?.GetNodeOrNull("Slider") as Godot.Range;
+        var nslider = slider?.GetNodeOrNull("Slider") as Godot.Range
+                   ?? FindNodeByName(slider ?? sliderRow, "Slider") as Godot.Range;
         if (nslider == null) { GD.PrintErr("[Sts2Unlimited] 'Slider' child not found."); return; }
 
         // Disconnect existing handlers:
@@ -142,11 +154,12 @@ public static class SettingsMenuIntegration
             int players = (int)Math.Round(v) + PLAYER_OFFSET;
             Sts2Unlimited.MaxPlayersOverride = players;
             SaveMaxPlayers(players);
-            slider.GetNodeOrNull("SliderValue")?.Set("text", $"{players}");
+            var sliderValueNode = slider.GetNodeOrNull("SliderValue") ?? FindNodeByName(sliderRow, "SliderValue");
+            sliderValueNode?.Set("text", $"{players}");
         }));
 
         // ── 3. Initial value display ─────────────────────────────────────────
-        slider.GetNodeOrNull("SliderValue")?.Set("text", $"{playerCount}");
+        (slider.GetNodeOrNull("SliderValue") ?? FindNodeByName(sliderRow, "SliderValue"))?.Set("text", $"{playerCount}");
 
         GD.Print($"[Sts2Unlimited] Max Players slider configured: range [{PLAYER_MIN},{PLAYER_MAX}], current={playerCount}");
     }
@@ -164,6 +177,15 @@ public static class SettingsMenuIntegration
         }
         foreach (var child in children)
             if (LooksDivider(child)) return child;
+        return null;
+    }
+
+    private static Node FindFirstDivider(Node root)
+    {
+        foreach (Node child in root.GetChildren(includeInternal: true))
+        {
+            if (LooksDivider(child)) return child;
+        }
         return null;
     }
 
@@ -193,6 +215,183 @@ public static class SettingsMenuIntegration
             if (found != null) return found;
         }
         return null;
+    }
+
+    private static Node FindNodeByName(Node root, string nodeName)
+    {
+        if (root.Name == nodeName)
+            return root;
+
+        foreach (Node child in root.GetChildren(includeInternal: true))
+        {
+            var found = FindNodeByName(child, nodeName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static bool TryFindTemplateRow(Node screen, out Node templateRow)
+    {
+        templateRow = null;
+
+        // Preferred explicit types from known versions.
+        var preferredTypeNames = new[]
+        {
+            "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider",
+            "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NSettingsSlider"
+        };
+
+        foreach (var typeName in preferredTypeNames)
+        {
+            var t = ResolveType(typeName);
+            if (t == null) continue;
+            var node = FindNodeByType(screen, t);
+            if (node?.GetParent() != null)
+            {
+                templateRow = node.GetParent();
+                return true;
+            }
+        }
+
+        // Generic fallback: any row that contains both Label + SliderValue and a Slider node.
+        foreach (Node node in screen.GetChildren(includeInternal: true))
+        {
+            var candidate = FindSliderOwnerNode(node);
+            if (candidate == null) continue;
+            var row = candidate.GetParent() ?? candidate;
+            if (FindNodeByName(row, "Label") != null && FindNodeByName(row, "SliderValue") != null)
+            {
+                templateRow = row;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static Node FindSliderOwnerNode(Node root)
+    {
+        // Exact "Slider" child is the most stable marker of settings slider widgets.
+        if (root.GetNodeOrNull("Slider") is Godot.Range)
+            return root;
+
+        foreach (Node child in root.GetChildren(includeInternal: true))
+        {
+            var found = FindSliderOwnerNode(child);
+            if (found != null) return found;
+        }
+
+        return null;
+    }
+
+    private static bool TryFindInsertionPoint(Node screen, out Node targetParent, out Node anchor)
+    {
+        targetParent = null;
+        anchor = null;
+
+        // Stable names in older builds.
+        Node moddingDivider = screen.GetNodeOrNull("%ModdingDivider") ?? FindNodeByName(screen, "ModdingDivider");
+        Node moddingButton = screen.GetNodeOrNull("%Modding") ?? FindNodeByName(screen, "Modding");
+
+        if (moddingButton?.GetParent() is Node parentFromButton)
+        {
+            targetParent = parentFromButton;
+            anchor = moddingButton;
+            return true;
+        }
+
+        if (moddingDivider?.GetParent() is Node parentFromDivider)
+        {
+            targetParent = parentFromDivider;
+            anchor = moddingDivider;
+            return true;
+        }
+
+        // Fallback: find any VBoxContainer row parent with a child whose name mentions "modding".
+        var best = FindNodeByPredicate(screen, n =>
+            n is BoxContainer &&
+            n.GetChildren().OfType<Node>().Any(c => c.Name.ToString().ToLowerInvariant().Contains("modding")));
+
+        if (best != null)
+        {
+            targetParent = best;
+            anchor = best.GetChildren().OfType<Node>()
+                .FirstOrDefault(c => c.Name.ToString().ToLowerInvariant().Contains("modding"))
+                ?? best.GetChildren().OfType<Node>().LastOrDefault();
+            return anchor != null;
+        }
+
+        return false;
+    }
+
+    private static Node FindNodeByPredicate(Node root, Func<Node, bool> predicate)
+    {
+        if (predicate(root)) return root;
+
+        foreach (Node child in root.GetChildren(includeInternal: true))
+        {
+            var found = FindNodeByPredicate(child, predicate);
+            if (found != null) return found;
+        }
+
+        return null;
+    }
+
+    private static Type ResolveType(string fullName)
+    {
+        var direct = Type.GetType($"{fullName}, sts2", false);
+        if (direct != null) return direct;
+
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            var t = asm.GetType(fullName, false);
+            if (t != null) return t;
+        }
+
+        return null;
+    }
+
+    private static List<Type> FindSettingsScreenTypes()
+    {
+        var result = new List<Type>();
+
+        // First, known canonical type names.
+        var known = new[]
+        {
+            "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NSettingsScreen"
+        };
+
+        foreach (var fullName in known)
+        {
+            var t = ResolveType(fullName);
+            if (t != null && !result.Contains(t)) result.Add(t);
+        }
+
+        // Fallback: discover candidates by naming convention.
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type[] types;
+            try { types = asm.GetTypes(); }
+            catch { continue; }
+
+            foreach (var t in types)
+            {
+                if (t == null || !typeof(Node).IsAssignableFrom(t)) continue;
+
+                var full = t.FullName ?? string.Empty;
+                if (!full.Contains("Settings", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!full.Contains("Screen", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var ready = t.GetMethod("_Ready",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                if (ready != null && !result.Contains(t)) result.Add(t);
+            }
+        }
+
+        return result;
     }
 
     public static void SaveMaxPlayers(int value)

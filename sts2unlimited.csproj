@@ -5,6 +5,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Sts2Unlimited</AssemblyName>
     <ReleaseDir>$(MSBuildProjectDirectory)\release</ReleaseDir>
+    <AssemblyName>Sts2Unlimited</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="./sts2.dll"/>
